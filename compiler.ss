@@ -1,0 +1,12 @@
+(load "tests-driver.scm")
+(load "tests-1.1-req.scm")
+
+(define (emit-program x)
+  (unless (integer? x)
+    (error 'emit-program "the input must be integer"))
+  (emit "\t.text")
+  (emit "\t.globl scheme_entry")
+  (emit "\t.type scheme_entry, @function")
+  (emit "scheme_entry:")
+  (emit "\tmovl $~s, %eax" x)
+  (emit "\tret"))
