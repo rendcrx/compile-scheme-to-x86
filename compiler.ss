@@ -1,12 +1,16 @@
 (load "tests-driver.scm")
+(load "tests-1.3-req.scm")
 (load "tests-1.2-req.scm")
 (load "tests-1.1-req.scm")
 
+(define fixtag 0)
 (define fixshift 2)
 (define fixmask #x03)
+(define bool-bits 6)
+(define boolmask #x3F)
 (define bool_f #x2F)
 (define bool_t #x6F)
-(define wordsize 4) ; byte
+(define wordsize 4) ; base byte
 (define fixnum-bits (- (* wordsize 8) fixshift))
 (define fixlower (- (expt 2 (- fixnum-bits 1))))
 (define fixupper (sub1 (expt 2 (- fixnum-bits 1))))
@@ -32,12 +36,121 @@
     [(char? x) (+ 15 (ash (char->integer x) fixcharshift))]
     ))
 
-(define (emit-program x)
-  (unless (immediate? x)
-    (error 'emit-program "the input must be integer"))
+(define-syntax define-primitive
+  (syntax-rules ()
+    [(_ (prim-name arg* ...) b b* ...)
+     (begin
+       (putprop 'prim-name '*is-prim* #t)
+       (putprop 'prim-name '*arg-count*
+		(length '(arg* ...)))
+       (putprop 'prim-name '*emitter*
+		(lambda (arg* ...) b b* ...)))]))
+
+(define (primitive? x)
+  (and (symbol? x) (getprop x '*is-prim*)))
+
+(define (primitive-emitter x)
+  (or (getprop x '*emitter*) (error 'primitive-emitter "error")))
+
+(define (primcall? expr)
+  (and (pair? expr) (primitive? (car expr))))
+
+(define (primitive-arg-count x)
+  (or (getprop x '*arg-count*) (error 'primitive-arg-count "error")))
+
+(define (check-primcall-args prim args)
+  (let ([len (length args)])
+    (unless (= len (primitive-arg-count prim)) (error 'check-primcall-args "error"))))
+
+(define (emit-primcall expr)
+  (let ([prim (car expr)] [args (cdr expr)])
+    (check-primcall-args prim args)
+    (apply (primitive-emitter prim) args)))
+
+(define-primitive (fxadd1 arg)
+  (emit-expr arg)
+  (emit "\taddl $~s, %eax" (immediate-rep 1)))
+
+(define-primitive (fxsub1 arg)
+  (emit-expr arg)
+  (emit "\tsubl $~s, %eax" (immediate-rep 1)))
+
+(define-primitive (char->fixnum arg)
+  (emit-expr arg)
+  (emit "\tshrl $~s, %eax" fixcharshift )
+  (emit "\tsall $~s, %eax" fixshift))
+
+(define-primitive (fixnum->char arg)
+  (emit-expr arg)
+  (emit "\tshll $~s, %eax" (- fixcharshift fixshift))
+  (emit "\torl $~s, %eax" fixchartag))
+
+(define (change-al-to-bool)
+  (emit "\tmovzbl %al, %eax")
+  (emit "\tsall $~s, %eax" bool-bits)
+  (emit "\torl $~s, %eax" bool_f))
+
+(define-primitive (fixnum? arg)
+  (emit-expr arg)
+  (emit "\tandl $~s, %eax" fixmask)
+  (emit "\tcmpl $~s, %eax" fixtag)
+  (emit "\tsete %al")
+  (change-al-to-bool))
+
+(define-primitive (fxzero? arg)
+  (emit-expr arg)
+  (emit "\tcmpl $0, %eax")
+  (emit "\tsete %al")
+  (change-al-to-bool))
+
+(define-primitive (null? arg)
+  (emit-expr arg)
+  (emit "\tcmpl $~s, %eax" null)
+  (emit "\tsete %al")
+  (change-al-to-bool))
+
+(define-primitive (boolean? arg)
+  (emit-expr arg)
+  (emit "andl $~s, %eax" boolmask)
+  (emit "cmpl $~s, %eax" bool_f)
+  (emit "sete %al")
+  (change-al-to-bool))
+
+(define-primitive (char? arg)
+  (emit-expr arg)
+  (emit "\tandl $~s, %eax" fixcharmask)
+  (emit "\tcmpl $~s, %eax" fixchartag)
+  (emit "\tsete %al")
+  (change-al-to-bool))
+
+(define-primitive (not arg)
+  (emit-expr arg)
+  (emit "\tcmpl $~s, %eax" bool_f)
+  (emit "\tsete %al")
+  (change-al-to-bool))
+
+(define-primitive (fxlognot arg)
+  (emit-expr arg)
+  (emit "\tshrl $~s, %eax" fixshift)
+  (emit "\tnotl %eax")
+  (emit "\tshll $~s, %eax" fixshift))
+
+(define (emit-immediate arg)
+  (emit "\tmovl $~a, %eax" (immediate-rep arg)))
+
+(define (emit-expr expr)
+  (cond
+    [(immediate? expr) (emit-immediate expr)]
+    [(primcall? expr) (emit-primcall expr)]
+    [else (error 'emit-expr "error")]))
+
+(define (emit-function-header arg)
   (emit "\t.text")
-  (emit "\t.globl scheme_entry")
-  (emit "\t.type scheme_entry, @function")
-  (emit "scheme_entry:")
-  (emit "\tmovl $~s, %eax" (immediate-rep x))
+  (emit "\t.globl ~a" arg)
+  (emit "\t.type ~a, @function" arg)
+  (emit "~a:" arg))
+
+(define (emit-program expr)
+  (emit-function-header "scheme_entry")
+  (emit-expr expr)
   (emit "\tret"))
