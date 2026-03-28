@@ -1,4 +1,5 @@
 (load "tests-driver.scm")
+(load "tests-1.6-opt.scm")
 (load "tests-1.6-req.scm")
 (load "tests-1.5-req.scm")
 (load "tests-1.4-req.scm")
@@ -303,6 +304,23 @@
 		       (extend-env (lhs b) si new-env)))]))
   (process-let (let-bindings expr) si env))
 
+(define (let*? x)
+  (and (list? x) (not (null? x)) (eq? (car x) 'let*)))
+
+(define (emit-let* si env expr)
+  (define (process-let* bindings si new-env)
+    (cond
+      [(empty? bindings)
+       (emit-expr si new-env (let-body expr))]
+      [else
+	(let ([b (first bindings)])
+	  (emit-expr si new-env (rhs b))
+	  (emit-stack-save si)
+	  (process-let* (rest bindings)
+			(next-stack-index si)
+			(extend-env (lhs b) si new-env)))]))
+  (process-let* (let-bindings expr) si env))
+
 (define (emit-immediate arg)
   (emit "\tmovl $~a, %eax" (immediate-rep arg)))
 
@@ -312,6 +330,7 @@
     [(variable? expr) (emit-variable-ref env expr)]
     [(if? expr) (emit-if si env expr)]
     [(let? expr) (emit-let si env expr)]
+    [(let*? expr) (emit-let* si env expr)]
     [(primcall? expr) (emit-primcall si env expr)]
     [else (error 'emit-expr "error")]))
 
