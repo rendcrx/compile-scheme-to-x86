@@ -1,4 +1,5 @@
 (load "tests-driver.scm")
+(load "tests-1.4-req.scm")
 (load "tests-1.3-req.scm")
 (load "tests-1.2-req.scm")
 (load "tests-1.1-req.scm")
@@ -135,12 +136,58 @@
   (emit "\tnotl %eax")
   (emit "\tshll $~s, %eax" fixshift))
 
+(define unique-label
+  (let ([count 0])
+    (lambda ()
+      (let ([L (format "L_~s" count)])
+	(set! count (add1 count))
+	L))))
+
+(define (if? expr)
+  (and (list? expr) (= (length expr) 4) (eq? (car expr) 'if)))
+
+(define (if-test expr)
+  (cadr expr))
+
+(define (if-conseq expr)
+  (caddr expr))
+
+(define (if-altern expr)
+  (cadddr expr))
+
+(define (emit-if expr)
+  (let ([alt-label (unique-label)]
+	[end-label (unique-label)])
+    (emit-expr (if-test expr))
+    (emit "\tcmpl $~s, %eax" bool_f)
+    (emit "\tje ~a" alt-label)
+    (emit-expr (if-conseq expr))
+    (emit "\tjmp ~a" end-label)
+    (emit "~a:" alt-label)
+    (emit-expr (if-altern expr))
+    (emit "~a:" end-label)))
+
+(define-syntax and
+  (syntax-rules ()
+    [(_) #t]
+    [(_ e) e]
+    [(_ e1 e2 ...)
+     (if e1 (and e2 ...) #f)]))
+
+(define-syntax or
+  (syntax-rules ()
+    [(_) #f]
+    [(_ e) e]
+    [(_ e1 e2 ...)
+     (if e1 e1 (or e2 ...))]))
+
 (define (emit-immediate arg)
   (emit "\tmovl $~a, %eax" (immediate-rep arg)))
 
 (define (emit-expr expr)
   (cond
     [(immediate? expr) (emit-immediate expr)]
+    [(if? expr) (emit-if expr)]
     [(primcall? expr) (emit-primcall expr)]
     [else (error 'emit-expr "error")]))
 
