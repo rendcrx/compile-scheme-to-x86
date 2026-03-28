@@ -2,5 +2,6 @@
 *.swo
 sc
 stst
+startup.s
 stst.s
 stst.out

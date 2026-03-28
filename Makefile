@@ -1,6 +1,6 @@
 .PHONY: test
 test: compiler.ss
-	echo \(test-all\) | chez compiler.ss
+	echo \(test-all\) | chez -q compiler.ss
 
 .PHONY: stst
 stst: startup.c stst.s
@@ -10,4 +10,4 @@ stst: startup.c stst.s
 
 .PHONY: clean
 clean:
-	rm stst stst.s stst.out
+	rm -f stst stst.s stst.out startup.s

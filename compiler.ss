@@ -1,4 +1,5 @@
 (load "tests-driver.scm")
+(load "tests-1.5-req.scm")
 (load "tests-1.4-req.scm")
 (load "tests-1.3-req.scm")
 (load "tests-1.2-req.scm")
@@ -39,13 +40,13 @@
 
 (define-syntax define-primitive
   (syntax-rules ()
-    [(_ (prim-name arg* ...) b b* ...)
+    [(_ (prim-name si arg* ...) b b* ...)
      (begin
        (putprop 'prim-name '*is-prim* #t)
        (putprop 'prim-name '*arg-count*
 		(length '(arg* ...)))
        (putprop 'prim-name '*emitter*
-		(lambda (arg* ...) b b* ...)))]))
+		(lambda (si arg* ...) b b* ...)))]))
 
 (define (primitive? x)
   (and (symbol? x) (getprop x '*is-prim*)))
@@ -63,26 +64,26 @@
   (let ([len (length args)])
     (unless (= len (primitive-arg-count prim)) (error 'check-primcall-args "error"))))
 
-(define (emit-primcall expr)
+(define (emit-primcall si expr)
   (let ([prim (car expr)] [args (cdr expr)])
     (check-primcall-args prim args)
-    (apply (primitive-emitter prim) args)))
+    (apply (primitive-emitter prim) si args)))
 
-(define-primitive (fxadd1 arg)
-  (emit-expr arg)
+(define-primitive (fxadd1 si arg)
+  (emit-expr si arg)
   (emit "\taddl $~s, %eax" (immediate-rep 1)))
 
-(define-primitive (fxsub1 arg)
-  (emit-expr arg)
+(define-primitive (fxsub1 si arg)
+  (emit-expr si arg)
   (emit "\tsubl $~s, %eax" (immediate-rep 1)))
 
-(define-primitive (char->fixnum arg)
-  (emit-expr arg)
+(define-primitive (char->fixnum si arg)
+  (emit-expr si arg)
   (emit "\tshrl $~s, %eax" fixcharshift )
   (emit "\tsall $~s, %eax" fixshift))
 
-(define-primitive (fixnum->char arg)
-  (emit-expr arg)
+(define-primitive (fixnum->char si arg)
+  (emit-expr si arg)
   (emit "\tshll $~s, %eax" (- fixcharshift fixshift))
   (emit "\torl $~s, %eax" fixchartag))
 
@@ -91,47 +92,47 @@
   (emit "\tsall $~s, %eax" bool-bits)
   (emit "\torl $~s, %eax" bool_f))
 
-(define-primitive (fixnum? arg)
-  (emit-expr arg)
+(define-primitive (fixnum? si arg)
+  (emit-expr si arg)
   (emit "\tandl $~s, %eax" fixmask)
   (emit "\tcmpl $~s, %eax" fixtag)
   (emit "\tsete %al")
   (change-al-to-bool))
 
-(define-primitive (fxzero? arg)
-  (emit-expr arg)
+(define-primitive (fxzero? si arg)
+  (emit-expr si arg)
   (emit "\tcmpl $0, %eax")
   (emit "\tsete %al")
   (change-al-to-bool))
 
-(define-primitive (null? arg)
-  (emit-expr arg)
+(define-primitive (null? si arg)
+  (emit-expr si arg)
   (emit "\tcmpl $~s, %eax" null)
   (emit "\tsete %al")
   (change-al-to-bool))
 
-(define-primitive (boolean? arg)
-  (emit-expr arg)
+(define-primitive (boolean? si arg)
+  (emit-expr si arg)
   (emit "andl $~s, %eax" boolmask)
   (emit "cmpl $~s, %eax" bool_f)
   (emit "sete %al")
   (change-al-to-bool))
 
-(define-primitive (char? arg)
-  (emit-expr arg)
+(define-primitive (char? si arg)
+  (emit-expr si arg)
   (emit "\tandl $~s, %eax" fixcharmask)
   (emit "\tcmpl $~s, %eax" fixchartag)
   (emit "\tsete %al")
   (change-al-to-bool))
 
-(define-primitive (not arg)
-  (emit-expr arg)
+(define-primitive (not si arg)
+  (emit-expr si arg)
   (emit "\tcmpl $~s, %eax" bool_f)
   (emit "\tsete %al")
   (change-al-to-bool))
 
-(define-primitive (fxlognot arg)
-  (emit-expr arg)
+(define-primitive (fxlognot si arg)
+  (emit-expr si arg)
   (emit "\tshrl $~s, %eax" fixshift)
   (emit "\tnotl %eax")
   (emit "\tshll $~s, %eax" fixshift))
@@ -155,40 +156,26 @@
 (define (if-altern expr)
   (cadddr expr))
 
-(define (emit-if expr)
+(define (emit-if si expr)
   (let ([alt-label (unique-label)]
 	[end-label (unique-label)])
-    (emit-expr (if-test expr))
+    (emit-expr si (if-test expr))
     (emit "\tcmpl $~s, %eax" bool_f)
     (emit "\tje ~a" alt-label)
-    (emit-expr (if-conseq expr))
+    (emit-expr si (if-conseq expr))
     (emit "\tjmp ~a" end-label)
     (emit "~a:" alt-label)
-    (emit-expr (if-altern expr))
+    (emit-expr si (if-altern expr))
     (emit "~a:" end-label)))
-
-(define-syntax and
-  (syntax-rules ()
-    [(_) #t]
-    [(_ e) e]
-    [(_ e1 e2 ...)
-     (if e1 (and e2 ...) #f)]))
-
-(define-syntax or
-  (syntax-rules ()
-    [(_) #f]
-    [(_ e) e]
-    [(_ e1 e2 ...)
-     (if e1 e1 (or e2 ...))]))
 
 (define (emit-immediate arg)
   (emit "\tmovl $~a, %eax" (immediate-rep arg)))
 
-(define (emit-expr expr)
+(define (emit-expr si expr)
   (cond
     [(immediate? expr) (emit-immediate expr)]
-    [(if? expr) (emit-if expr)]
-    [(primcall? expr) (emit-primcall expr)]
+    [(if? expr) (emit-if si expr)]
+    [(primcall? expr) (emit-primcall si expr)]
     [else (error 'emit-expr "error")]))
 
 (define (emit-function-header arg)
@@ -197,7 +184,85 @@
   (emit "\t.type ~a, @function" arg)
   (emit "~a:" arg))
 
+;; si point to the first empty space of stack top
+(define-primitive (fx+ si arg1 arg2)
+  (emit-expr si arg1)
+  (emit "\tmovl %eax, ~s(%esp)" si)
+  (emit-expr (- si wordsize) arg2)
+  (emit "\taddl ~s(%esp), %eax" si))
+
+(define-primitive (fx- si arg1 arg2)
+  (emit-expr si arg2)
+  (emit "\tmovl %eax, ~s(%esp)" si)
+  (emit-expr (- si wordsize) arg1)
+  (emit "\tsubl ~s(%esp), %eax" si))
+
+(define-primitive (fx* si arg1 arg2)
+  (emit-expr si arg1)
+  (emit "\tmovl %eax, ~s(%esp)" si)
+  (emit-expr (- si wordsize) arg2)
+  (emit "\tsarl $~s, %eax" fixshift)
+  (emit "\tmull ~s(%esp)" si))
+
+(define-primitive (fxlogor si arg1 arg2)
+  (emit-expr si arg1)
+  (emit "\tmovl %eax, ~s(%esp)" si)
+  (emit-expr (- si wordsize) arg2)
+  (emit "\torl ~s(%esp), %eax" si))
+
+(define-primitive (fxlogand si arg1 arg2)
+  (emit-expr si arg1)
+  (emit "\tmovl %eax, ~s(%esp)" si)
+  (emit-expr (- si wordsize) arg2)
+  (emit "\tandl ~s(%esp), %eax" si))
+
+(define-primitive (fx= si arg1 arg2)
+  (emit-expr si arg1)
+  (emit "\tmovl %eax, ~s(%esp)" si)
+  (emit-expr (- si wordsize) arg2)
+  (emit "\tcmpl ~s(%esp), %eax" si)
+  (emit "\tsete %al")
+  (change-al-to-bool))
+
+(define-primitive (fx< si arg1 arg2)
+  (emit-expr si arg1)
+  (emit "\tmovl %eax, ~s(%esp)" si)
+  (emit-expr (- si wordsize) arg2)
+  (emit "\tcmpl ~s(%esp), %eax" si)
+  (emit "\tsetg %al")
+  (change-al-to-bool))
+
+(define-primitive (fx<= si arg1 arg2)
+  (emit-expr si arg1)
+  (emit "\tmovl %eax, ~s(%esp)" si)
+  (emit-expr (- si wordsize) arg2)
+  (emit "\tcmpl ~s(%esp), %eax" si)
+  (emit "\tsetge %al")
+  (change-al-to-bool))
+
+(define-primitive (fx> si arg1 arg2)
+  (emit-expr si arg1)
+  (emit "\tmovl %eax, ~s(%esp)" si)
+  (emit-expr (- si wordsize) arg2)
+  (emit "\tcmpl ~s(%esp), %eax" si)
+  (emit "\tsetl %al")
+  (change-al-to-bool))
+
+(define-primitive (fx>= si arg1 arg2)
+  (emit-expr si arg1)
+  (emit "\tmovl %eax, ~s(%esp)" si)
+  (emit-expr (- si wordsize) arg2)
+  (emit "\tcmpl ~s(%esp), %eax" si)
+  (emit "\tsetle %al")
+  (change-al-to-bool))
+
 (define (emit-program expr)
+  (emit-function-header "L_scheme_entry")
+  (emit-expr (- wordsize) expr)
+  (emit "\tret")
   (emit-function-header "scheme_entry")
-  (emit-expr expr)
+  (emit "\tmovl %esp, %ecx")     ; store %esp
+  (emit "\tmovl 4(%esp), %esp")  ; get and update %esp
+  (emit "\tcall L_scheme_entry") ; call procedure
+  (emit "\tmovl %ecx, %esp")     ; restore %esp
   (emit "\tret"))
