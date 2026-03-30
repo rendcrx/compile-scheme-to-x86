@@ -1,4 +1,5 @@
 (load "tests-driver.scm")
+(load "tests-1.7-req.scm")
 (load "tests-1.6-opt.scm")
 (load "tests-1.6-req.scm")
 (load "tests-1.5-req.scm")
@@ -6,6 +7,18 @@
 (load "tests-1.3-req.scm")
 (load "tests-1.2-req.scm")
 (load "tests-1.1-req.scm")
+
+(define lazy #f)
+(define lazy-string "")
+(define (start-lazy)
+  (string-append lazy-string "\n")
+  (set! lazy #t))
+(define (end-lazy) (set! lazy #f))
+(define old-emit emit)
+(define (emit . args)
+  (if lazy
+      (set! lazy-string (string-append lazy-string (apply format args) "\n"))
+      (apply old-emit args)))
 
 (define fixtag 0)
 (define fixshift 2)
@@ -145,6 +158,12 @@
       (let ([L (format "L_~s" count)])
 	(set! count (add1 count))
 	L))))
+
+(define (unique-labels l)
+  (if (null? l)
+      '()
+      (cons (unique-label)
+	    (unique-labels (cdr l)))))
 
 (define (if? expr)
   (and (list? expr) (= (length expr) 4) (eq? (car expr) 'if)))
@@ -324,6 +343,92 @@
 (define (emit-immediate arg)
   (emit "\tmovl $~a, %eax" (immediate-rep arg)))
 
+(define (letrec? expr)
+  (and (list? expr) (not (null? expr)) (eq? (car expr) 'letrec)))
+
+(define (letrec-bindings x)
+  (cadr x))
+
+;; don't care outside environment
+(define (make-initial-env vars labels)
+  (if (and (null? vars) (null? labels))
+      '()
+      (cons (cons (car vars)
+		  (car labels))
+	    (make-initial-env (cdr vars) (cdr labels)))))
+
+(define (lambda-formals x)
+  (cadr x))
+
+(define (lambda-body x)
+  (caddr x))
+
+(define (emit-lambda env)
+  (lambda (expr label)
+    (start-lazy)
+    (emit-function-header label)
+    (let ([fmls (lambda-formals expr)]
+	  [body (lambda-body expr)])
+      (let f ([fmls fmls] [si (- wordsize)] [env env])
+	(cond
+	  [(empty? fmls)
+	   (emit-expr si env body)]
+	  [else
+	    (f (rest fmls)
+	       (- si wordsize)
+	       (extend-env (first fmls) si env))])))
+    (emit "\tret")
+    (end-lazy)))
+
+(define (emit-adjust-base x)
+  (emit "\taddl $~s, %esp" x))
+
+(define (call-args x)
+  (cdr x))
+
+(define (call-target x)
+  (car x))
+
+(define (lookup name env)
+  (if (null? env)
+      (error 'lookup "error")
+      (let ([item (car env)])
+	(let ([env-name (car item)]
+	      [env-label (cdr item)])
+	  (if (eq? name env-name)
+	      env-label
+	      (lookup name (cdr env)))))))
+
+(define (emit-call si label)
+  (emit "\tcall ~a" label))
+
+(define (app? expr)
+  (and (list? expr) (not (null? expr))))
+
+;; function call
+(define (emit-app si env expr)
+  (define (emit-arguments si args)
+    (unless (empty? args)
+      (emit-expr si env (first args))
+      (emit "\tmovl %eax, ~s(%esp)" si)
+      (emit-arguments (- si wordsize) (rest args))))
+  (emit-arguments (- si wordsize) (call-args expr))
+  (emit-adjust-base (+ si wordsize))
+  (emit-call si (lookup (call-target expr) env))
+  (emit-adjust-base (- (+ si wordsize))))
+
+(define (letrec-body x)
+  (caddr x))
+
+(define (emit-letrec si expr)
+  (let* ([bindings (letrec-bindings expr)]
+	 [lvars (map lhs bindings)]
+	 [lambdas (map rhs bindings)]
+	 [labels (unique-labels lvars)]
+	 [env (make-initial-env lvars labels)])
+    (for-each (emit-lambda env) lambdas labels)
+    (emit-expr si env (letrec-body expr))))
+
 (define (emit-expr si env expr)
   (cond
     [(immediate? expr) (emit-immediate expr)]
@@ -332,6 +437,8 @@
     [(let? expr) (emit-let si env expr)]
     [(let*? expr) (emit-let* si env expr)]
     [(primcall? expr) (emit-primcall si env expr)]
+    [(letrec? expr) (emit-letrec si expr)]
+    [(app? expr) (emit-app si env expr)]
     [else (error 'emit-expr "error")]))
 
 (define (emit-function-header arg)
@@ -340,7 +447,7 @@
   (emit "~a:" arg))
 
 (define (emit-program expr)
-  (emit ".text")
+  (emit "\t.text")
   (emit-function-header "L_scheme_entry")
   (emit-expr (- wordsize) '() expr)
   (emit "\tret")
@@ -349,4 +456,5 @@
   (emit "\tmovl 4(%esp), %esp")  ; get and update %esp
   (emit "\tcall L_scheme_entry") ; call procedure
   (emit "\tmovl %ecx, %esp")     ; restore %esp
-  (emit "\tret"))
+  (emit "\tret")
+  (emit lazy-string))
