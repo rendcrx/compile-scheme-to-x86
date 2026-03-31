@@ -1,4 +1,5 @@
 (load "tests-driver.scm")
+(load "tests-1.8-req.scm")
 (load "tests-1.7-req.scm")
 (load "tests-1.6-opt.scm")
 (load "tests-1.6-req.scm")
@@ -372,12 +373,11 @@
       (let f ([fmls fmls] [si (- wordsize)] [env env])
 	(cond
 	  [(empty? fmls)
-	   (emit-expr si env body)]
+	   (emit-tail-expr si env body)]
 	  [else
 	    (f (rest fmls)
 	       (- si wordsize)
 	       (extend-env (first fmls) si env))])))
-    (emit "\tret")
     (end-lazy)))
 
 (define (emit-adjust-base x)
@@ -428,6 +428,86 @@
 	 [env (make-initial-env lvars labels)])
     (for-each (emit-lambda env) lambdas labels)
     (emit-expr si env (letrec-body expr))))
+
+(define (emit-tail-immediate arg)
+  (emit "\tmovl $~a, %eax" (immediate-rep arg))
+  (emit "\tret"))
+
+(define (emit-tail-variable-ref env expr)
+  (cond
+    [(null? env) (error 'emit-tail-variable-ref "env error")]
+    [else
+      (let ([item (car env)])
+	(let ([name (car item)]
+	      [si (cdr item)])
+	  (if (eq? name expr)
+	      (begin (emit "\tmovl ~s(%esp), %eax" si)
+		     (emit "\tret"))
+	      (emit-tail-variable-ref (cdr env) expr))))]))
+
+(define (emit-tail-if si env expr)
+  (let ([alt-label (unique-label)]
+	[end-label (unique-label)])
+    (emit-expr si env (if-test expr))
+    (emit "\tcmpl $~s, %eax" bool_f)
+    (emit "\tje ~a" alt-label)
+    (emit-tail-expr si env (if-conseq expr))
+    (emit "~a:" alt-label)
+    (emit-tail-expr si env (if-altern expr))))
+
+(define (emit-tail-let si env expr)
+  (define (process-let bindings si new-env)
+    (cond
+      [(empty? bindings)
+       (emit-tail-expr si new-env (let-body expr))]
+      [else
+	(let ([b (first bindings)])
+	  (emit-expr si env (rhs b))
+	  (emit-stack-save si)
+	  (process-let (rest bindings)
+		       (next-stack-index si)
+		       (extend-env (lhs b) si new-env)))]))
+  (process-let (let-bindings expr) si env))
+
+(define (emit-tail-primcall si env expr)
+  (emit-primcall si env expr)
+  (emit "\tret"))
+
+(define (last args)
+  (if (null? (cdr args))
+      (car args)
+      (last (cdr args))))
+
+(define (prev args)
+  (if (null? (cdr args))
+      '()
+      (cons (car args)
+	    (prev (cdr args)))))
+
+(define (emit-tail-app si env expr)
+  (define (emit-arguments si args)
+    (unless (empty? args)
+      (emit-expr si env (last args))
+      (emit "\tmovl %eax, ~s(%esp)" (- (* (length args) wordsize)))
+      (emit-arguments si (prev args))))
+  (define (change-to-safe si args)
+    (let* ([len (length args)]
+	   [pos (- (+ 4 (* len wordsize)))])
+      (if (< si pos)
+	  si
+	  pos)))
+  (emit-arguments (change-to-safe si (call-args expr)) (call-args expr))
+  (emit "\tjmp ~a" (lookup (call-target expr) env)))
+
+(define (emit-tail-expr si env expr)
+  (cond
+    [(immediate? expr) (emit-tail-immediate expr)]
+    [(variable? expr) (emit-tail-variable-ref env expr)]
+    [(if? expr) (emit-tail-if si env expr)]
+    [(let? expr) (emit-tail-let si env expr)]
+    [(primcall? expr) (emit-tail-primcall si env expr)]
+    [(app? expr) (emit-tail-app si env expr)]
+    [else (error 'emit-tail-expr "error")]))
 
 (define (emit-expr si env expr)
   (cond
