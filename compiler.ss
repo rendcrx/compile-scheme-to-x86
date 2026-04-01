@@ -1,4 +1,5 @@
 (load "tests-driver.scm")
+(load "tests-1.9.1-req.scm")
 (load "tests-1.8-req.scm")
 (load "tests-1.7-req.scm")
 (load "tests-1.6-opt.scm")
@@ -36,6 +37,7 @@
 (define fixcharshift 8)
 (define fixcharmask #xff)
 (define fixchartag #x0f)
+(define pairtag #x1)
 
 (define (fixnum? x)
   (and (integer? x) (exact? x) (<= fixlower x fixupper)))
@@ -124,6 +126,14 @@
 (define-primitive (null? si env arg)
   (emit-expr si env arg)
   (emit "\tcmpl $~s, %eax" null)
+  (emit "\tsete %al")
+  (change-al-to-bool))
+
+(define-primitive (eq? si env arg1 arg2)
+  (emit-expr si env arg1)
+  (emit "\tmovl %eax, ~s(%esp)" si)
+  (emit-expr (- si wordsize) env arg2)
+  (emit "\tcmpl ~s(%esp), %eax" si)
   (emit "\tsete %al")
   (change-al-to-bool))
 
@@ -308,7 +318,10 @@
 	env))
 
 (define (let-body x)
-  (caddr x))
+  (let ([body-exprs (cddr x)])
+    (if (null? (cdr body-exprs))
+	(car body-exprs)
+	(cons 'begin body-exprs))))
 
 (define (emit-let si env expr)
   (define (process-let bindings si new-env)
@@ -509,6 +522,102 @@
     [(app? expr) (emit-tail-app si env expr)]
     [else (error 'emit-tail-expr "error")]))
 
+(define (pair? x)
+  (and (list? x) (= (length x) 2) (eq? (car x) 'pair?)))
+
+(define (emit-pair si env x)
+  (emit-expr si env (cadr x))
+  (emit "\tandl $7, %eax")
+  (emit "\tcmpl $1, %eax")
+  (emit "\tsete %al")
+  (change-al-to-bool))
+
+; (define (emit-pair si env x)
+;   (if (eq? (car x) 'car)
+;       (emit-car si env x)
+;       (emit-cdr si env x)))
+
+(define (emit-car si env x)
+  (emit-expr si env (cadr x))
+  (emit "\tmovl -1(%eax), %eax"))
+
+(define (emit-cdr si env x)
+  (emit-expr si env (cadr x))
+  (emit "\tmovl 3(%eax), %eax"))
+
+(define (cons? x)
+  (and (list? x) (eq? (length x) 3) (eq? (car x) 'cons)))
+
+(define (cons-car x)
+  (cadr x))
+
+(define (cons-cdr x)
+  (caddr x))
+
+(define (emit-cons si env x)
+  (let ([car (cons-car x)]
+	[cdr (cons-cdr x)])
+    (emit "\tmovl %ebp, ~s(%esp)" si)
+    (emit "\taddl $8, %ebp")
+    (emit-expr (- si wordsize) env car)
+    (emit "\tmovl ~s(%esp), %ebx" si)
+    (emit "\tmovl %eax, (%ebx)")
+    (emit-expr (- si wordsize) env cdr)
+    (emit "\tmovl ~s(%esp), %ebx" si)
+    (emit "\tmovl %eax, 4(%ebx)")
+    (emit "\tmovl %ebx, %eax")
+    (emit "\torl $1, %eax")))
+
+(define (car? x)
+  (and (list? x) (= 2 (length x)) (eq? (car x) 'car)))
+
+(define (cdr? x)
+  (and (list? x) (= 2 (length x)) (eq? (car x) 'cdr)))
+
+(define (begin? x)
+  (and (list? x) (<= 2 (length x)) (eq? (car x) 'begin)))
+
+(define (emit-begin si env x)
+  (let ([expr (cdr x)])
+    (if (= (length expr) 1)
+	(emit-expr si env (car expr))
+	(begin
+	  (emit-expr si env (car expr))
+	  (emit-begin si env expr)))))
+
+(define (set-car!? x)
+  (and (list? x) (= 3 (length x)) (eq? (car x) 'set-car!)))
+
+(define (emit-set-car! si env x)
+  (let ([name (cadr x)]
+	[new (caddr x)])
+    (if (symbol? name)
+	(let ([offset (lookup name env)])
+	  (emit-expr si env new)
+	  (emit "\tmovl ~s(%esp), %ebx" offset)
+	  (emit "\tshr $1, %ebx")
+	  (emit "\tshl $1, %ebx")
+	  (emit "\tmovl %eax, (%ebx)"))
+	(begin
+	  (emit "\tmovl %eax, %ebx")
+	  (emit "\tshr $1, %ebx")
+	  (emit "\tshl $1, %ebx")
+	  (emit-expr si env new)
+	  (emit "\tmovl %eax, (%ebx)")))))
+
+(define (set-cdr!? x)
+  (and (list? x) (= 3 (length x)) (eq? (car x) 'set-cdr!)))
+
+(define (emit-set-cdr! si env x)
+  (let ([name (cadr x)]
+	[new (caddr x)])
+    (let ([offset (lookup name env)])
+      (emit-expr si env new)
+      (emit "\tmovl ~s(%esp), %ebx" offset)
+      (emit "\tshr $1, %ebx")
+      (emit "\tshl $1, %ebx")
+      (emit "\tmovl %eax, 4(%ebx)"))))
+
 (define (emit-expr si env expr)
   (cond
     [(immediate? expr) (emit-immediate expr)]
@@ -516,6 +625,13 @@
     [(if? expr) (emit-if si env expr)]
     [(let? expr) (emit-let si env expr)]
     [(let*? expr) (emit-let* si env expr)]
+    [(cons? expr) (emit-cons si env expr)]
+    [(pair? expr) (emit-pair si env expr)]
+    [(car? expr) (emit-car si env expr)]
+    [(cdr? expr) (emit-cdr si env expr)]
+    [(set-car!? expr) (emit-set-car! si env expr)]
+    [(set-cdr!? expr) (emit-set-cdr! si env expr)]
+    [(begin? expr) (emit-begin si env expr)]
     [(primcall? expr) (emit-primcall si env expr)]
     [(letrec? expr) (emit-letrec si expr)]
     [(app? expr) (emit-app si env expr)]
@@ -532,9 +648,19 @@
   (emit-expr (- wordsize) '() expr)
   (emit "\tret")
   (emit-function-header "scheme_entry")
-  (emit "\tmovl %esp, %ecx")     ; store %esp
-  (emit "\tmovl 4(%esp), %esp")  ; get and update %esp
-  (emit "\tcall L_scheme_entry") ; call procedure
-  (emit "\tmovl %ecx, %esp")     ; restore %esp
+  (emit "\tmovl 4(%esp), %ecx")
+  (emit "\tmovl %ebx, 4(%ecx)")
+  (emit "\tmovl %esi, 16(%ecx)")
+  (emit "\tmovl %edi, 20(%ecx)")
+  (emit "\tmovl %ebp, 24(%ecx)")
+  (emit "\tmovl %esp, 28(%ecx)")
+  (emit "\tmovl 12(%esp), %ebp")
+  (emit "\tmovl 8(%esp), %esp")
+  (emit "\tcall L_scheme_entry")
+  (emit "\tmovl 4(%ecx), %ebx")
+  (emit "\tmovl 16(%ecx), %esi")
+  (emit "\tmovl 20(%ecx), %edi")
+  (emit "\tmovl 24(%ecx), %ebp")
+  (emit "\tmovl 28(%ecx), %esp")
   (emit "\tret")
   (emit lazy-string))

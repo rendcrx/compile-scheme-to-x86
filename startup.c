@@ -1,9 +1,10 @@
 #include <assert.h>
 #include <stdio.h>
 #include <unistd.h>
+#include <stdlib.h>
 #include <sys/mman.h>
 
-extern int scheme_entry(char *);
+extern int scheme_entry(void *, char *, char *);
 
 #define bool_f     0x2F
 #define bool_t     0x6F
@@ -14,10 +15,26 @@ extern int scheme_entry(char *);
 #define char_tag   0x0f
 #define char_mask  0xff
 #define char_shift 8
+#define pair_mask  0x07
+#define pair_tag   0x01
+#define pair_shift 0x03
 
 typedef unsigned int ptr;
 
-static void print_ptr(ptr x)
+typedef struct {
+	void *eax;
+	void *ebx;
+	void *ecx;
+	void *edx;
+	void *esi;
+	void *edi;
+	void *ebp;
+	void *esp;
+} context;
+
+static void print_pair(ptr x, int ok);
+
+static void _print_ptr(ptr x, int ok)
 {
 	if ((x & fix_mask) == fix_tag)
 		printf("%d", ((int)x) >> fix_shift);
@@ -37,8 +54,37 @@ static void print_ptr(ptr x)
 		default:
 			   printf("#\\%c", (int)x >> char_shift);
 		}
+	} else if ((x & pair_mask) == pair_tag) {
+		print_pair(x, ok);
 	} else
 		printf("#<unknown 0x%08x>", x);
+}
+
+static void print_pair(ptr x, int ok)
+{
+	int a, b;
+	int *p = (int *)(((int)x) & ~pair_mask);
+	a = *p;
+	b = *(p+1);
+	if (ok)
+		printf("(");
+	_print_ptr(a, 1);
+	if (b != null) {
+		if ((b & pair_mask) == pair_tag) {
+			printf(" ");
+			_print_ptr(b, 0);
+		} else {
+			printf(" . ");
+			_print_ptr(b, 0);
+		}
+	}
+	if (ok)
+		printf(")");
+}
+
+static void print_ptr(ptr x)
+{
+	_print_ptr(x, 1);
 	printf("\n");
 }
 
@@ -73,7 +119,13 @@ int main(int argc, char *argv[])
 	int stack_size = 16 * 4096;
 	char *stack_top = allocate_protected_space(stack_size);
 	char *stack_base = stack_top + stack_size;
-	print_ptr(scheme_entry(stack_base));
+	context ctx;
+	char *heap_ptr = malloc(1024);
+	char *heap = heap_ptr;
+	if ((int)heap & 7)
+		heap = (char *)(((int)heap + 7) & ~7);
+	print_ptr(scheme_entry(&ctx, stack_base, heap));
+	free(heap_ptr);
 	deallocate_protected_space(stack_top, stack_size);
 	return 0;
 }
